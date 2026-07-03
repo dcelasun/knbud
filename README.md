@@ -29,6 +29,10 @@ On Windows, extract the `.zip` file and run:
 .\knbud.exe --help
 ```
 
+### Distro packages
+
+- [Arch Linux (AUR)](https://aur.archlinux.org/packages/knbud)
+
 ### Building manually
 
 ```sh
