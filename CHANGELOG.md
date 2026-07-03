@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/dcelasun/knbud/compare/v1.0.0...v1.0.1) (2026-07-03)
+
+
+### Miscellaneous Chores
+
+* Fix release uploading in CI ([0e455f7](https://github.com/dcelasun/knbud/commit/0e455f765db2466f1f1e2adb139051cd94e232d4))
+
 ## 1.0.0 (2026-07-03)
 
 
