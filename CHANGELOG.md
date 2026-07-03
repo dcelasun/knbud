@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/dcelasun/knbud/compare/v1.0.1...v1.0.3) (2026-07-03)
+
+
+### Miscellaneous Chores
+
+* Add LICENSE ([011b92a](https://github.com/dcelasun/knbud/commit/011b92af67d231cf8afa8a42e739cb6fb2ae4aef))
+
 ## [1.0.1](https://github.com/dcelasun/knbud/compare/v1.0.0...v1.0.1) (2026-07-03)
 
 
