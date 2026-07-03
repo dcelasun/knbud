@@ -1,42 +1,85 @@
-# knbud
+# knbud - K8s NFS Buddy
 
-`knbud` finds Kubernetes workloads that use NFS, calculates their runtime dependency graph, and scales them safely for NFS maintenance.
+`knbud` scales Kubernetes workloads down safely before NFS maintenance and scales them back up afterwards.
 
-It supports Deployments, StatefulSets, and CronJobs. Direct NFS users are discovered from PVC storage classes. Consumers that do not mount NFS are included through explicit or inferred dependencies.
+It supports Deployments, StatefulSets, and CronJobs.
 
 ## Build
 
-```console
+```sh
 make vet
 make test
 make build
 ```
 
-The resulting binary is `./knbud`.
+The binary is written to `./knbud`.
 
-## Commands
+## Discover
 
-```console
-knbud discover --config /path/to/knbud.yaml
-knbud plan down --config /path/to/knbud.yaml
-knbud plan up --config /path/to/knbud.yaml
-knbud down --config /path/to/knbud.yaml
-knbud up --config /path/to/knbud.yaml
+The first stage. `discover` reads the live cluster.
+
+Inspect the cluster without writing a file:
+
+```sh
+./knbud discover --dry-run
 ```
 
-`discover` and `plan` are read-only. `down` and `up` print the plan and require confirmation unless `--yes` is supplied.
+Create or update `knbud.yaml`:
 
-Common options:
+```sh
+./knbud discover
+```
 
-| Option | Default | Purpose |
+High-confidence dependencies are saved automatically. Unclear dependencies are shown for review. Flux support and hidden dependencies are handled by short prompts.
+
+Use flags for a non-interactive run:
+
+```sh
+./knbud discover --accept-suggestions
+./knbud discover --ignore-suggestions
+```
+
+Any dependency not auto-discovered must be added to `customDependencies`, see [Configuration](#configuration).
+
+## Scale down and up
+
+Plan commands use only the saved relationships in `knbud.yaml`.
+
+Print a scale down plan:
+
+```sh
+./knbud plan down --dry-run
+```
+
+Print and apply it:
+
+```sh
+./knbud plan down
+```
+
+Once the NFS service is online again, scale back up:
+
+```sh
+./knbud plan up
+```
+
+Skip the confirmation prompt:
+
+```sh
+./knbud plan down --yes
+./knbud plan up --yes
+```
+
+Useful flags:
+
+| Option | Default | Use |
 | --- | --- | --- |
-| `--config` | `knbud.yaml` | Configuration path |
-| `--kubeconfig` | client-go default | Kubeconfig path |
-| `--context` | current context | Kubeconfig context |
+| `--config` | `knbud.yaml` | Config file |
+| `--kubeconfig` | client-go default | Kubeconfig file |
+| `--context` | current context | Kubernetes context |
 | `--output` | `human` | `human` or `json` |
-| `--parallelism` | `8` | Maximum concurrent actions in a wave |
+| `--parallelism` | `8` | Actions per wave |
 | `--timeout` | `5m` | Timeout per workload |
-| `--yes` | `false` | Skip confirmation for `down` and `up` |
 
 ## Configuration
 
@@ -44,75 +87,77 @@ Common options:
 version: 1
 
 storageClasses:
-  - nfs-some-class
-  - nfs-another-class
+  - shared-nfs
 
 inference:
   serviceReferences: true
-  ignore:
-    - consumer:
-        kind: Deployment
-        namespace: example
-        name: metrics-reader
-      provider:
-        kind: Deployment
-        namespace: example
-        name: optional-metrics
 
 gitOps:
   flux:
     enabled: true
     mode: auto
-  argoCD:
-    enabled: false
 
-groups:
-  application:
+customGroups:
+  web:
     selectors:
       - kind: Deployment
-        namespace: application
+        namespace: example
         matchLabels:
-          app.kubernetes.io/part-of: application
-  object-store:
+          app.kubernetes.io/part-of: web
+  database:
     resources:
       - kind: StatefulSet
-        namespace: object-store
-        name: object-store
+        namespace: example
+        name: database
 
-dependencies:
-  - consumer: application
-    provider: object-store
+customDependencies:
+  - consumer: web
+    provider: database
 
 include:
   - kind: Deployment
-    namespace: platform-system
+    namespace: example
     name: storage-operator
 
 exclude:
   - kind: Deployment
     namespace: example
-    name: never-manage
+    name: unmanaged
 ```
 
-Selectors require a kind and may use a name, `matchLabels`, or `labelSelector`. Namespace omission matches all namespaces.
+`groups` and `dependencies` are managed by `discover`.
 
-An edge means that the consumer requires the provider. Consumers are stopped before providers and restored after providers.
+Use `customGroups` and `customDependencies` for hand-written rules. `discover` preserves them.
 
-`include` adds workloads that do not directly use NFS. `exclude` prevents workloads from entering a down plan. An excluded workload with existing saved state remains eligible for restoration.
+A dependency points from consumer to provider. Consumers scale down first. Providers scale up first.
 
-## Dependency inference
+`include` adds a workload to the scale down plan. `exclude` keeps it out. Saved state still allows an excluded workload to be scaled up.
 
-Exact same-namespace Service references in container environment values, commands, arguments, and referenced ConfigMaps are active automatically when the Service selector resolves to one scalable workload.
+Selectors support `name`, `matchLabels`, or `labelSelector`. A missing namespace matches every namespace.
 
-Ingress hostname references and ambiguous Service mappings are suggestions only. Secret contents are never read. Hidden dependencies must be declared explicitly.
+## Discovery rules
 
-Every active edge includes its source and evidence in `discover` and `plan`. `inference.ignore` suppresses a specific inferred edge.
+NFS use is found from:
 
-## GitOps controllers
+- PVC storage classes
+- NFS persistent volumes
+- inline NFS volumes
+- the NFS CSI driver
+- StatefulSet claim templates
 
-`discover` reports Flux and Argo CD ownership whether or not suspension is enabled. A provider must be explicitly enabled before `down` mutates its resources.
+Service dependencies are found in container commands, arguments, environment values, and ConfigMaps. The Service must be in the same namespace. A single matching workload is accepted automatically.
 
-Flux supports automatic ownership selection:
+Ambiguous Services and Ingress hostnames require review. Suggestions that cannot change the plan are hidden.
+
+Secrets are never read. Add dependencies stored in Secrets or application settings by hand.
+
+Pushgateway and Alertmanager endpoints are treated as telemetry, not runtime dependencies.
+
+Accepted and inferred dependencies are saved in `knbud.yaml`. Planning does not infer them again.
+
+## GitOps
+
+Flux auto mode suspends owners of workloads in the plan:
 
 ```yaml
 gitOps:
@@ -121,9 +166,7 @@ gitOps:
     mode: auto
 ```
 
-Automatic mode uses Flux ownership labels and inventory data. It includes both HelmReleases and their owning Kustomizations, and suspends only owners associated with workloads in the maintenance plan.
-
-Flux and Argo CD also support exact resource selection:
+Flux and Argo CD can use an explicit list:
 
 ```yaml
 gitOps:
@@ -133,27 +176,24 @@ gitOps:
     resources:
       - kind: Kustomization
         namespace: gitops-system
-        name: application
-      - kind: HelmRelease
-        namespace: application
-        name: application
+        name: example
   argoCD:
     enabled: true
     mode: explicit
     resources:
       - kind: Application
         namespace: argocd
-        name: application
+        name: example
 ```
 
-Argo CD supports only explicit mode because workload-to-Application tracking is not a sufficient authorization boundary for automatic mutation.
+Argo CD supports explicit mode only.
 
-## Execution
+## Safety
 
-The graph is divided into topological waves. Workloads in one wave run concurrently up to `--parallelism`. The next wave starts only after the entire current wave succeeds.
+Scaling down (`plan down`) runs consumers before providers. Scaling up (`plan up`) uses the reverse order. Workloads in one wave run in parallel.
 
-Before changing a workload, `knbud` stores its original replica or suspension state in the `knbud.io/state` annotation. An up operation discovers annotated workloads directly and removes state only after successful restoration. Interrupted operations can be rerun.
+Original replica and suspension values are stored in annotations. They are removed only after a successful scale up. Interrupted operations can be run again.
 
-GitOps state is stored separately in `knbud.io/gitops-state`. During `down`, Kustomizations are suspended before HelmReleases and workload changes. During `up`, workloads are restored first, followed by HelmReleases and Kustomizations. Resources that were already suspended remain suspended.
+HorizontalPodAutoscalers block planning. Active CronJob Jobs must finish before scale down completes.
 
-HorizontalPodAutoscalers targeting selected workloads fail planning. CronJobs are suspended and existing active Jobs are allowed to finish; the operation fails if they exceed the workload timeout.
+Operator-managed workloads produce warnings. Include the operator and add a dependency in `customDependencies` when it must scale down first.

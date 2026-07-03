@@ -1,18 +1,21 @@
 package discovery
 
 import (
+	"fmt"
 	"net/url"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/dcelasun/knbud/internal/config"
+	"github.com/dcelasun/knbud/internal/graph"
 	"github.com/dcelasun/knbud/internal/kube"
 	"github.com/dcelasun/knbud/internal/model"
 	"github.com/samber/lo"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -33,7 +36,20 @@ type Result struct {
 	GitOps           config.GitOps
 }
 
+// Build resolves the full discovery result, including live dependency inference
+// and candidate suggestions. It is used by discover.
 func Build(snapshot *kube.Snapshot, cfg *config.Config) (*Result, error) {
+	return build(snapshot, cfg, true)
+}
+
+// BuildPlan resolves the result using only the relationships declared in the
+// configuration. Inference is skipped so that plans are deterministic from
+// knbud.yaml rather than from live cluster state.
+func BuildPlan(snapshot *kube.Snapshot, cfg *config.Config) (*Result, error) {
+	return build(snapshot, cfg, false)
+}
+
+func build(snapshot *kube.Snapshot, cfg *config.Config, infer bool) (*Result, error) {
 	storageClasses := make(map[string]bool, len(cfg.StorageClasses))
 	for _, name := range cfg.StorageClasses {
 		storageClasses[name] = true
@@ -70,9 +86,10 @@ func Build(snapshot *kube.Snapshot, cfg *config.Config) (*Result, error) {
 		}
 	}
 
-	groups := make(map[string][]model.Ref, len(cfg.Groups))
+	effectiveGroups := cfg.EffectiveGroups()
+	groups := make(map[string][]model.Ref, len(effectiveGroups))
 	var unresolvedGroups []string
-	for name, group := range cfg.Groups {
+	for name, group := range effectiveGroups {
 		selectors := append(append([]config.ResourceSelector{}, group.Resources...), group.Selectors...)
 		groups[name] = config.Resolve(selectors, workloads)
 		if len(groups[name]) == 0 {
@@ -81,15 +98,16 @@ func Build(snapshot *kube.Snapshot, cfg *config.Config) (*Result, error) {
 	}
 	sort.Strings(unresolvedGroups)
 
-	edges := explicitEdges(cfg.Dependencies, groups)
+	gitOpsResources, gitOpsOwnership := discoverGitOps(snapshot, workloads)
+
+	edges := explicitEdges(cfg.EffectiveDependencies(), groups)
 	suggestions := make([]model.Suggestion, 0)
-	if cfg.Inference.ServiceReferencesEnabled() {
+	if infer && cfg.Inference.ServiceReferencesEnabled() {
 		inferred, ambiguous := inferServiceEdges(snapshot, workloads)
 		inferred = filterIgnored(inferred, cfg.Inference.Ignore, workloads)
 		edges = append(edges, inferred...)
 		suggestions = append(suggestions, ambiguous...)
 	}
-	suggestions = append(suggestions, inferIngressSuggestions(snapshot, workloads)...)
 	edges = deduplicateEdges(edges)
 
 	included := make(map[string]bool)
@@ -107,6 +125,13 @@ func Build(snapshot *kube.Snapshot, cfg *config.Config) (*Result, error) {
 		}
 	}
 
+	if infer {
+		suggestions = append(suggestions, inferIngressSuggestions(snapshot, workloads)...)
+		scaled := graph.ConsumerClosureExcept(included, edges, excluded)
+		suggestions = filterRelevantSuggestions(suggestions, scaled)
+		suggestions = filterDecidedSuggestions(suggestions, edges, cfg.Inference.Ignore, workloads)
+	}
+
 	hpas := make(map[string]string)
 	for _, hpa := range snapshot.HPAs {
 		kind, err := model.ParseKind(hpa.Spec.ScaleTargetRef.Kind)
@@ -116,7 +141,6 @@ func Build(snapshot *kube.Snapshot, cfg *config.Config) (*Result, error) {
 		ref := model.Ref{Kind: kind, Namespace: hpa.Namespace, Name: hpa.Spec.ScaleTargetRef.Name}
 		hpas[ref.ID()] = hpa.Namespace + "/" + hpa.Name
 	}
-	gitOpsResources, gitOpsOwnership := discoverGitOps(snapshot, workloads)
 	return &Result{
 		Inventory: &model.Inventory{
 			Workloads: workloads, Edges: edges, Suggestions: suggestions,
@@ -124,6 +148,109 @@ func Build(snapshot *kube.Snapshot, cfg *config.Config) (*Result, error) {
 		},
 		Groups: groups, Included: included, Excluded: excluded, UnresolvedGroups: unresolvedGroups,
 		HPAs: hpas, Jobs: snapshot.Jobs, GitOps: cfg.GitOps,
+	}, nil
+}
+
+// filterRelevantSuggestions drops suggestions that cannot affect a plan. A
+// candidate matters only when its provider is already in the NFS scale set, so
+// that accepting it pulls the consumer in ahead of it; a diagnostic matters only
+// when its consumer is in that set.
+func filterRelevantSuggestions(suggestions []model.Suggestion, scaled map[string]bool) []model.Suggestion {
+	var result []model.Suggestion
+	for _, suggestion := range suggestions {
+		if len(suggestion.Targets) == 0 {
+			if scaled[suggestion.Consumer.ID()] {
+				result = append(result, suggestion)
+			}
+			continue
+		}
+		kept := suggestion.Targets[:0]
+		for _, target := range suggestion.Targets {
+			if scaled[target.ID()] {
+				kept = append(kept, target)
+			}
+		}
+		if len(kept) > 0 {
+			suggestion.Targets = kept
+			result = append(result, suggestion)
+		}
+	}
+	return result
+}
+
+func filterDecidedSuggestions(suggestions []model.Suggestion, edges []model.Edge, ignored []config.IgnoredDependency, workloads map[string]*model.Workload) []model.Suggestion {
+	edgeIDs := make(map[string]bool, len(edges))
+	for _, edge := range edges {
+		edgeIDs[edge.ID()] = true
+	}
+	var result []model.Suggestion
+	for _, suggestion := range suggestions {
+		if len(suggestion.Targets) == 0 {
+			result = append(result, suggestion)
+			continue
+		}
+		filtered := suggestion.Targets[:0]
+		for _, target := range suggestion.Targets {
+			edge := model.Edge{Consumer: suggestion.Consumer, Provider: target}
+			reverse := model.Edge{Consumer: target, Provider: suggestion.Consumer}
+			// Drop a candidate that duplicates an existing edge, or that reverses
+			// one: if target -> consumer is already known, consumer -> target
+			// cannot also be a dependency and would only create a cycle.
+			if edgeIDs[edge.ID()] || edgeIDs[reverse.ID()] || ignoredEdge(suggestion.Consumer, target, ignored, workloads) {
+				continue
+			}
+			filtered = append(filtered, target)
+		}
+		if len(filtered) > 0 {
+			suggestion.Targets = filtered
+			result = append(result, suggestion)
+		}
+	}
+	return result
+}
+
+func ignoredEdge(consumer, provider model.Ref, ignored []config.IgnoredDependency, workloads map[string]*model.Workload) bool {
+	consumerWorkload := workloads[consumer.ID()]
+	providerWorkload := workloads[provider.ID()]
+	if consumerWorkload == nil || providerWorkload == nil {
+		return false
+	}
+	for _, rule := range ignored {
+		if rule.Consumer.Matches(consumerWorkload) && rule.Provider.Matches(providerWorkload) {
+			return true
+		}
+	}
+	return false
+}
+
+func BootstrapConfig(snapshot *kube.Snapshot) (*config.Config, error) {
+	classes := make(map[string]bool)
+	for _, storageClass := range snapshot.StorageClasses {
+		if storageClass.Provisioner == "nfs.csi.k8s.io" {
+			classes[storageClass.Name] = true
+		}
+	}
+	pvs := make(map[string]bool, len(snapshot.PVs))
+	for _, pv := range snapshot.PVs {
+		pvs[pv.Name] = pv.Spec.NFS != nil || pv.Spec.CSI != nil && pv.Spec.CSI.Driver == "nfs.csi.k8s.io"
+	}
+	for _, pvc := range snapshot.PVCs {
+		if pvs[pvc.Spec.VolumeName] && pvc.Spec.StorageClassName != nil {
+			classes[*pvc.Spec.StorageClassName] = true
+		}
+	}
+	names := make([]string, 0, len(classes))
+	for name := range classes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no NFS storage classes were detected")
+	}
+	enabled := true
+	return &config.Config{
+		Version: 1, StorageClasses: names,
+		Inference: config.Inference{ServiceReferences: &enabled},
 	}, nil
 }
 
@@ -264,7 +391,7 @@ func addDeployment(target map[string]*model.Workload, item *appsv1.Deployment, p
 		Ref:       model.Ref{Kind: model.KindDeployment, Namespace: item.Namespace, Name: item.Name},
 		Labels:    item.Labels,
 		PodLabels: item.Spec.Template.Labels, Annotations: item.Annotations, PodSpec: &item.Spec.Template.Spec,
-		Replicas: replicas, UID: string(item.UID),
+		Replicas: replicas, ManagedBy: controllerRef(item.OwnerReferences), UID: string(item.UID),
 	}
 	workload.DirectNFS = podUsesNFS(item.Namespace, workload.PodSpec, pvcNFS)
 	target[workload.Ref.ID()] = workload
@@ -276,7 +403,7 @@ func addStatefulSet(target map[string]*model.Workload, item *appsv1.StatefulSet,
 		Ref:       model.Ref{Kind: model.KindStatefulSet, Namespace: item.Namespace, Name: item.Name},
 		Labels:    item.Labels,
 		PodLabels: item.Spec.Template.Labels, Annotations: item.Annotations, PodSpec: &item.Spec.Template.Spec,
-		Replicas: replicas, UID: string(item.UID),
+		Replicas: replicas, ManagedBy: controllerRef(item.OwnerReferences), UID: string(item.UID),
 	}
 	workload.DirectNFS = podUsesNFS(item.Namespace, workload.PodSpec, pvcNFS)
 	for _, claim := range item.Spec.VolumeClaimTemplates {
@@ -293,10 +420,37 @@ func addCronJob(target map[string]*model.Workload, item *batchv1.CronJob, pvcNFS
 		Ref:       model.Ref{Kind: model.KindCronJob, Namespace: item.Namespace, Name: item.Name},
 		Labels:    item.Labels,
 		PodLabels: item.Spec.JobTemplate.Spec.Template.Labels, Annotations: item.Annotations,
-		PodSpec: &item.Spec.JobTemplate.Spec.Template.Spec, Suspended: suspended, UID: string(item.UID),
+		PodSpec: &item.Spec.JobTemplate.Spec.Template.Spec, Suspended: suspended,
+		ManagedBy: controllerRef(item.OwnerReferences), UID: string(item.UID),
 	}
 	workload.DirectNFS = podUsesNFS(item.Namespace, workload.PodSpec, pvcNFS)
 	target[workload.Ref.ID()] = workload
+}
+
+// controllerRef returns the controlling owner of a workload when it is a custom
+// resource rather than a built-in controller. A Deployment, StatefulSet, or
+// CronJob is normally top-level, so a controller ownerReference indicates an
+// operator (for example the Prometheus operator) that may revert manual scaling.
+func controllerRef(owners []metav1.OwnerReference) *model.ControllerRef {
+	for _, owner := range owners {
+		if owner.Controller == nil || !*owner.Controller {
+			continue
+		}
+		if isBuiltinController(owner.Kind) {
+			continue
+		}
+		return &model.ControllerRef{APIVersion: owner.APIVersion, Kind: owner.Kind, Name: owner.Name}
+	}
+	return nil
+}
+
+func isBuiltinController(kind string) bool {
+	switch kind {
+	case model.KindDeployment, model.KindStatefulSet, model.KindCronJob, "ReplicaSet", "DaemonSet", "Job":
+		return true
+	default:
+		return false
+	}
 }
 
 func podUsesNFS(namespace string, spec *corev1.PodSpec, pvcNFS map[string]bool) bool {
@@ -344,6 +498,12 @@ func inferServiceEdges(snapshot *kube.Snapshot, workloads map[string]*model.Work
 			}
 			evidence := referencedService(stringsToScan, service.Name, service.Namespace)
 			if evidence == "" {
+				continue
+			}
+			// Outbound telemetry pushes (metrics to pushgateway, alerts to
+			// alertmanager) are not runtime dependencies: the consumer does not
+			// need the sink to be up to do its own work.
+			if isTelemetryService(service.Name) {
 				continue
 			}
 			providers := serviceProviders(service, workloads)
@@ -451,6 +611,18 @@ func serviceHost(host, name, namespace string) bool {
 		host == strings.ToLower(name+"."+namespace) ||
 		host == strings.ToLower(name+"."+namespace+".svc") ||
 		host == strings.ToLower(name+"."+namespace+".svc.cluster.local")
+}
+
+var telemetryServiceTokens = []string{"pushgateway", "alertmanager"}
+
+func isTelemetryService(serviceName string) bool {
+	name := strings.ToLower(serviceName)
+	for _, token := range telemetryServiceTokens {
+		if strings.Contains(name, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func inferIngressSuggestions(snapshot *kube.Snapshot, workloads map[string]*model.Workload) []model.Suggestion {

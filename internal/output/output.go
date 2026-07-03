@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/dcelasun/knbud/internal/discovery"
 	"github.com/dcelasun/knbud/internal/model"
@@ -83,7 +84,6 @@ func RenderPlan(writer io.Writer, plan *planner.Plan, format string) error {
 		}
 	}
 	printEdges(writer, plan.Edges)
-	printSuggestions(writer, plan.Suggestions)
 	return nil
 }
 
@@ -131,28 +131,26 @@ func printEdges(writer io.Writer, edges []model.Edge) {
 }
 
 func printSuggestions(writer io.Writer, suggestions []model.Suggestion) {
-	fmt.Fprintln(writer, "\nSuggestions:")
-	if len(suggestions) == 0 {
+	candidates := model.DependencyCandidates(suggestions)
+	diagnostics := model.Diagnostics(suggestions)
+	fmt.Fprintln(writer, "\nDependency candidates:")
+	if len(candidates) == 0 {
 		fmt.Fprintln(writer, "  none")
-		return
-	}
-	sort.Slice(suggestions, func(i, j int) bool {
-		left := suggestions[i].Consumer.ID() + suggestions[i].Evidence + suggestions[i].Reason
-		right := suggestions[j].Consumer.ID() + suggestions[j].Evidence + suggestions[j].Reason
-		return left < right
-	})
-	for _, suggestion := range suggestions {
-		fmt.Fprintf(writer, "  %s: %s (%s)", suggestion.Consumer.ID(), suggestion.Evidence, suggestion.Reason)
-		if len(suggestion.Targets) > 0 {
-			fmt.Fprint(writer, " targets=")
-			for index, target := range suggestion.Targets {
-				if index > 0 {
-					fmt.Fprint(writer, ",")
-				}
-				fmt.Fprint(writer, target.ID())
-			}
+	} else {
+		for _, candidate := range candidates {
+			fmt.Fprintf(writer, "  %s -> %s [%s: %s]\n", candidate.Consumer.ID(), candidate.Provider.ID(), candidate.Reason, strings.Join(candidate.Evidence, ", "))
 		}
-		fmt.Fprintln(writer)
+	}
+	fmt.Fprintln(writer, "\nDiagnostics:")
+	if len(diagnostics) == 0 {
+		fmt.Fprintln(writer, "  none")
+	} else {
+		sort.Slice(diagnostics, func(i, j int) bool {
+			return diagnostics[i].Consumer.ID()+diagnostics[i].Evidence < diagnostics[j].Consumer.ID()+diagnostics[j].Evidence
+		})
+		for _, diagnostic := range diagnostics {
+			fmt.Fprintf(writer, "  %s references %s, but %s; no action is required unless this is unexpected\n", diagnostic.Consumer.ID(), diagnostic.Evidence, diagnostic.Reason)
+		}
 	}
 }
 

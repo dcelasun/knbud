@@ -11,6 +11,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -23,20 +24,20 @@ import (
 )
 
 type Snapshot struct {
-	Deployments     []appsv1.Deployment
-	StatefulSets    []appsv1.StatefulSet
-	CronJobs        []batchv1.CronJob
-	Jobs            []batchv1.Job
-	PVs             []corev1.PersistentVolume
-	PVCs            []corev1.PersistentVolumeClaim
-	Services        []corev1.Service
-	ConfigMaps      []corev1.ConfigMap
-	Ingresses       []networkingv1.Ingress
-	NetworkPolicies []networkingv1.NetworkPolicy
-	HPAs            []autoscalingv2.HorizontalPodAutoscaler
-	Kustomizations  []unstructured.Unstructured
-	HelmReleases    []unstructured.Unstructured
-	Applications    []unstructured.Unstructured
+	Deployments    []appsv1.Deployment
+	StatefulSets   []appsv1.StatefulSet
+	CronJobs       []batchv1.CronJob
+	Jobs           []batchv1.Job
+	PVs            []corev1.PersistentVolume
+	PVCs           []corev1.PersistentVolumeClaim
+	Services       []corev1.Service
+	ConfigMaps     []corev1.ConfigMap
+	Ingresses      []networkingv1.Ingress
+	HPAs           []autoscalingv2.HorizontalPodAutoscaler
+	Kustomizations []unstructured.Unstructured
+	HelmReleases   []unstructured.Unstructured
+	Applications   []unstructured.Unstructured
+	StorageClasses []storagev1.StorageClass
 }
 
 type Client struct {
@@ -81,7 +82,7 @@ func newRESTMapper(client discovery.DiscoveryInterface) (meta.RESTMapper, error)
 func (c *Client) Snapshot(ctx context.Context) (*Snapshot, error) {
 	var snapshot Snapshot
 	var wg sync.WaitGroup
-	errorsChannel := make(chan error, 14)
+	errorsChannel := make(chan error, 15)
 	run := func(operation func() error) {
 		wg.Add(1)
 		go func() {
@@ -155,18 +156,18 @@ func (c *Client) Snapshot(ctx context.Context) (*Snapshot, error) {
 		return wrapListError("ingresses", err)
 	})
 	run(func() error {
-		items, err := c.Interface.NetworkingV1().NetworkPolicies("").List(ctx, metav1.ListOptions{})
-		if err == nil {
-			snapshot.NetworkPolicies = items.Items
-		}
-		return wrapListError("network policies", err)
-	})
-	run(func() error {
 		items, err := c.Interface.AutoscalingV2().HorizontalPodAutoscalers("").List(ctx, metav1.ListOptions{})
 		if err == nil {
 			snapshot.HPAs = items.Items
 		}
 		return wrapListError("horizontal pod autoscalers", err)
+	})
+	run(func() error {
+		items, err := c.Interface.StorageV1().StorageClasses().List(ctx, metav1.ListOptions{})
+		if err == nil {
+			snapshot.StorageClasses = items.Items
+		}
+		return wrapListError("storage classes", err)
 	})
 	run(func() error {
 		items, err := c.listOptional(ctx, schema.GroupKind{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization"})

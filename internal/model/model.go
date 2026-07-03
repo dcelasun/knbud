@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -53,8 +54,20 @@ type Workload struct {
 	Replicas    int32             `json:"replicas,omitempty"`
 	Suspended   bool              `json:"suspended,omitempty"`
 	DirectNFS   bool              `json:"directNFS"`
+	ManagedBy   *ControllerRef    `json:"managedBy,omitempty"`
 	UID         string            `json:"-"`
 }
+
+// ControllerRef identifies a non-workload controller (typically an operator
+// custom resource such as Prometheus or Alertmanager) that owns a workload and
+// may revert manual scaling.
+type ControllerRef struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+}
+
+func (c ControllerRef) String() string { return c.Kind + "/" + c.Name }
 
 type GitOpsRef struct {
 	Provider   string `json:"provider" yaml:"provider"`
@@ -100,6 +113,51 @@ type Suggestion struct {
 	Targets  []Ref  `json:"targets,omitempty"`
 	Evidence string `json:"evidence"`
 	Reason   string `json:"reason"`
+}
+
+type DependencyCandidate struct {
+	Consumer Ref      `json:"consumer"`
+	Provider Ref      `json:"provider"`
+	Evidence []string `json:"evidence"`
+	Reason   string   `json:"reason"`
+}
+
+func DependencyCandidates(suggestions []Suggestion) []DependencyCandidate {
+	byEdge := make(map[string]DependencyCandidate)
+	for _, suggestion := range suggestions {
+		for _, target := range suggestion.Targets {
+			id := suggestion.Consumer.ID() + "->" + target.ID()
+			candidate := byEdge[id]
+			candidate.Consumer = suggestion.Consumer
+			candidate.Provider = target
+			candidate.Reason = suggestion.Reason
+			if !slices.Contains(candidate.Evidence, suggestion.Evidence) {
+				candidate.Evidence = append(candidate.Evidence, suggestion.Evidence)
+				sort.Strings(candidate.Evidence)
+			}
+			byEdge[id] = candidate
+		}
+	}
+	candidates := make([]DependencyCandidate, 0, len(byEdge))
+	for _, candidate := range byEdge {
+		candidates = append(candidates, candidate)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		left := candidates[i].Consumer.ID() + candidates[i].Provider.ID()
+		right := candidates[j].Consumer.ID() + candidates[j].Provider.ID()
+		return left < right
+	})
+	return candidates
+}
+
+func Diagnostics(suggestions []Suggestion) []Suggestion {
+	var diagnostics []Suggestion
+	for _, suggestion := range suggestions {
+		if len(suggestion.Targets) == 0 {
+			diagnostics = append(diagnostics, suggestion)
+		}
+	}
+	return diagnostics
 }
 
 type Inventory struct {

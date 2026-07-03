@@ -2,6 +2,7 @@ package planner
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/dcelasun/knbud/internal/config"
@@ -73,6 +74,22 @@ func TestBuildUpRestoresExcludedWorkload(t *testing.T) {
 	}
 	if got := *plan.Waves[0][0].TargetReplicas; got != 3 {
 		t.Fatalf("expected 3 replicas, got %d", got)
+	}
+}
+
+func TestBuildDownWarnsOnOperatorManagedWorkload(t *testing.T) {
+	store := workload("store", true)
+	store.ManagedBy = &model.ControllerRef{APIVersion: "example.io/v1", Kind: "DatabaseCluster", Name: "database"}
+	result := &discovery.Result{
+		Inventory: &model.Inventory{Workloads: map[string]*model.Workload{store.Ref.ID(): store}},
+		Included:  map[string]bool{store.Ref.ID(): true}, HPAs: map[string]string{},
+	}
+	plan, err := Build(result, Down)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Warnings) != 1 || !strings.Contains(plan.Warnings[0], "managed by DatabaseCluster/database") {
+		t.Fatalf("expected operator warning, got %#v", plan.Warnings)
 	}
 }
 

@@ -111,7 +111,7 @@ func Build(result *discovery.Result, direction Direction) (*Plan, error) {
 
 	plan := &Plan{Direction: direction, Edges: relevantEdges(result.Inventory.Edges, selected), Suggestions: relevantSuggestions(result.Inventory.Suggestions, selected)}
 	if direction == Down {
-		plan.Warnings = activeJobWarnings(result, selected)
+		plan.Warnings = append(activeJobWarnings(result, selected), operatorWarnings(result, selected)...)
 	}
 	for _, ids := range waves {
 		wave := make([]Action, 0, len(ids))
@@ -261,6 +261,19 @@ func activeJobWarnings(result *discovery.Result, selected map[string]bool) []str
 				warnings = append(warnings, fmt.Sprintf("active Job %s/%s must finish before %s can complete", job.Namespace, job.Name, ref.ID()))
 			}
 		}
+	}
+	sort.Strings(warnings)
+	return warnings
+}
+
+func operatorWarnings(result *discovery.Result, selected map[string]bool) []string {
+	var warnings []string
+	for id := range selected {
+		workload := result.Inventory.Workloads[id]
+		if workload == nil || workload.ManagedBy == nil {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("%s is managed by %s; scaling may be reverted unless the managing operator is scaled down first", id, workload.ManagedBy.String()))
 	}
 	sort.Strings(warnings)
 	return warnings
