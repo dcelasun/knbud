@@ -62,6 +62,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Build archive
+        id: archive
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
@@ -74,14 +75,17 @@ jobs:
           mkdir -p dist/package
           go build -trimpath -ldflags="-s -w" -o "dist/package/$binary" ./cmd/knbud
           if [ "$GOOS" = windows ]; then
+            archive_path="dist/$archive.zip"
             cd dist/package
             zip "../$archive.zip" "$binary"
           else
-            tar -C dist/package -czf "dist/$archive.tar.gz" "$binary"
+            archive_path="dist/$archive.tar.gz"
+            tar -C dist/package -czf "$archive_path" "$binary"
           fi
+          echo "path=$archive_path" >> "$GITHUB_OUTPUT"
       - name: Upload archive
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ needs.release_please.outputs.tag_name }}
-        run: gh release upload "$TAG_NAME" dist/*
+        run: gh release upload "$TAG_NAME" "${{ steps.archive.outputs.path }}"
