@@ -4,7 +4,32 @@
 
 It supports Deployments, StatefulSets, and CronJobs.
 
-## Build
+## Installation
+
+### Releases (recommended)
+
+Download an archive from the [latest release](https://github.com/dcelasun/knbud/releases/latest).
+
+Choose `linux`, `macos`, or `windows`, then choose your CPU architecture:
+
+- `x86_64` for Intel or AMD
+- `arm64` for ARM or Apple Silicon
+
+On Linux or macOS:
+
+```sh
+tar -xzf knbud_<version>_<os>_<architecture>.tar.gz
+chmod +x knbud
+./knbud --help
+```
+
+On Windows, extract the `.zip` file and run:
+
+```powershell
+.\knbud.exe --help
+```
+
+### Building manually
 
 ```sh
 make vet
