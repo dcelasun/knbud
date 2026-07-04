@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,12 +34,8 @@ type Config struct {
 // groups. discover manages the latter; custom entries win on a name collision.
 func (c *Config) EffectiveGroups() map[string]Group {
 	merged := make(map[string]Group, len(c.Groups)+len(c.CustomGroups))
-	for name, group := range c.Groups {
-		merged[name] = group
-	}
-	for name, group := range c.CustomGroups {
-		merged[name] = group
-	}
+	maps.Copy(merged, c.Groups)
+	maps.Copy(merged, c.CustomGroups)
 	return merged
 }
 

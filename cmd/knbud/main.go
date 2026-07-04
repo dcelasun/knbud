@@ -757,12 +757,12 @@ func parseSelection(value string, count int) (map[int]bool, error) {
 		return selected, nil
 	}
 	if value == "all" {
-		for index := 0; index < count; index++ {
+		for index := range count {
 			selected[index] = true
 		}
 		return selected, nil
 	}
-	for _, raw := range strings.Split(value, ",") {
+	for raw := range strings.SplitSeq(value, ",") {
 		number, err := strconv.Atoi(strings.TrimSpace(raw))
 		if err != nil || number < 1 || number > count {
 			return nil, fmt.Errorf("invalid suggestion number %q", strings.TrimSpace(raw))

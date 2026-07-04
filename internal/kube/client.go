@@ -84,13 +84,11 @@ func (c *Client) Snapshot(ctx context.Context) (*Snapshot, error) {
 	var wg sync.WaitGroup
 	errorsChannel := make(chan error, 15)
 	run := func(operation func() error) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := operation(); err != nil {
 				errorsChannel <- err
 			}
-		}()
+		})
 	}
 	run(func() error {
 		items, err := c.Interface.AppsV1().Deployments("").List(ctx, metav1.ListOptions{})

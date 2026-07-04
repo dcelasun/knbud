@@ -7,7 +7,6 @@ import (
 	"github.com/dcelasun/knbud/internal/config"
 	"github.com/dcelasun/knbud/internal/kube"
 	"github.com/dcelasun/knbud/internal/model"
-	"github.com/samber/lo"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -17,7 +16,7 @@ import (
 
 func TestBuildDiscoversNFSAndServiceDependency(t *testing.T) {
 	snapshot := &kube.Snapshot{
-		PVCs:     []corev1.PersistentVolumeClaim{{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "data"}, Spec: corev1.PersistentVolumeClaimSpec{StorageClassName: lo.ToPtr("nfs")}}},
+		PVCs:     []corev1.PersistentVolumeClaim{{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "data"}, Spec: corev1.PersistentVolumeClaimSpec{StorageClassName: new("nfs")}}},
 		Services: []corev1.Service{{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "store"}, Spec: corev1.ServiceSpec{Selector: map[string]string{"app": "store"}}}},
 		Deployments: []appsv1.Deployment{
 			deployment("app", "store", map[string]string{"app": "store"}, corev1.PodSpec{Volumes: []corev1.Volume{{VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "data"}}}}}),
@@ -137,7 +136,7 @@ func TestBootstrapConfigDetectsNFSStorageClasses(t *testing.T) {
 		}},
 		PVCs: []corev1.PersistentVolumeClaim{{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "legacy"},
-			Spec:       corev1.PersistentVolumeClaimSpec{StorageClassName: lo.ToPtr("nfs-legacy"), VolumeName: "legacy-volume"},
+			Spec:       corev1.PersistentVolumeClaimSpec{StorageClassName: new("nfs-legacy"), VolumeName: "legacy-volume"},
 		}},
 	}
 	cfg, err := BootstrapConfig(snapshot)
@@ -217,7 +216,7 @@ func TestBuildDetectsOperatorManagedWorkload(t *testing.T) {
 			Namespace: "data", Name: "database-replica",
 			OwnerReferences: []metav1.OwnerReference{{APIVersion: "example.io/v1", Kind: "DatabaseCluster", Name: "database", Controller: &controller}},
 		},
-		Spec: appsv1.StatefulSetSpec{Replicas: lo.ToPtr(int32(1)), Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{}}},
+		Spec: appsv1.StatefulSetSpec{Replicas: new(int32(1)), Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{}}},
 	}
 	result, err := Build(&kube.Snapshot{StatefulSets: []appsv1.StatefulSet{prometheus}}, &config.Config{Version: 1, StorageClasses: []string{"nfs"}})
 	if err != nil {
@@ -233,7 +232,7 @@ func TestBuildMergesCustomDependencies(t *testing.T) {
 	frontend := deployment("web", "frontend", nil, corev1.PodSpec{})
 	database := appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "data", Name: "database"},
-		Spec:       appsv1.StatefulSetSpec{Replicas: lo.ToPtr(int32(1)), Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{}}},
+		Spec:       appsv1.StatefulSetSpec{Replicas: new(int32(1)), Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{}}},
 	}
 	cfg := &config.Config{
 		Version: 1, StorageClasses: []string{"nfs"},
@@ -294,6 +293,6 @@ func TestFilterRelevantSuggestions(t *testing.T) {
 func deployment(namespace, name string, podLabels map[string]string, spec corev1.PodSpec) appsv1.Deployment {
 	return appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
-		Spec:       appsv1.DeploymentSpec{Replicas: lo.ToPtr(int32(1)), Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: podLabels}, Spec: spec}},
+		Spec:       appsv1.DeploymentSpec{Replicas: new(int32(1)), Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: podLabels}, Spec: spec}},
 	}
 }

@@ -13,7 +13,6 @@ import (
 	"github.com/dcelasun/knbud/internal/kube"
 	"github.com/dcelasun/knbud/internal/model"
 	"github.com/dcelasun/knbud/internal/planner"
-	"github.com/samber/lo"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,7 +21,7 @@ import (
 func nfsDeployment(namespace, name string) appsv1.Deployment {
 	return appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name},
-		Spec: appsv1.DeploymentSpec{Replicas: lo.ToPtr(int32(1)), Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		Spec: appsv1.DeploymentSpec{Replicas: new(int32(1)), Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
 			Volumes: []corev1.Volume{{VolumeSource: corev1.VolumeSource{NFS: &corev1.NFSVolumeSource{Server: "nfs", Path: "/d"}}}},
 		}}},
 	}

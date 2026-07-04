@@ -62,10 +62,7 @@ func (e *Executor) runGitOpsPhase(ctx context.Context, direction planner.Directi
 	var mu sync.Mutex
 	var failures []error
 	for _, action := range phase.Actions {
-		action := action
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -78,7 +75,7 @@ func (e *Executor) runGitOpsPhase(ctx context.Context, direction planner.Directi
 				mu.Unlock()
 				cancel()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	return errors.Join(failures...)
@@ -196,10 +193,7 @@ func (e *Executor) runWave(ctx context.Context, direction planner.Direction, act
 	var mu sync.Mutex
 	var failures []error
 	for _, action := range actions {
-		action := action
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -212,7 +206,7 @@ func (e *Executor) runWave(ctx context.Context, direction planner.Direction, act
 				mu.Unlock()
 				cancel()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	return errors.Join(failures...)
@@ -327,7 +321,7 @@ func (e *Executor) patch(ctx context.Context, ref model.Ref, patch []byte) error
 }
 
 func (e *Executor) setReplicas(ctx context.Context, ref model.Ref, replicas int32) error {
-	patch := []byte(fmt.Sprintf(`{"spec":{"replicas":%d}}`, replicas))
+	patch := fmt.Appendf(nil, `{"spec":{"replicas":%d}}`, replicas)
 	var err error
 	switch ref.Kind {
 	case model.KindDeployment:
@@ -344,7 +338,7 @@ func (e *Executor) setReplicas(ctx context.Context, ref model.Ref, replicas int3
 }
 
 func (e *Executor) setCronJob(ctx context.Context, ref model.Ref, suspended bool) error {
-	patch := []byte(fmt.Sprintf(`{"spec":{"suspend":%t}}`, suspended))
+	patch := fmt.Appendf(nil, `{"spec":{"suspend":%t}}`, suspended)
 	if _, err := e.Client.BatchV1().CronJobs(ref.Namespace).Patch(ctx, ref.Name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
 		return fmt.Errorf("set suspended=%t: %w", suspended, err)
 	}

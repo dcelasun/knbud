@@ -11,7 +11,6 @@ import (
 	"github.com/dcelasun/knbud/internal/discovery"
 	"github.com/dcelasun/knbud/internal/graph"
 	"github.com/dcelasun/knbud/internal/model"
-	"github.com/samber/lo"
 )
 
 type Direction string
@@ -282,21 +281,21 @@ func operatorWarnings(result *discovery.Result, selected map[string]bool) []stri
 func NewState(workload *model.Workload, operationID string, now time.Time) *State {
 	state := &State{OperationID: operationID, SavedAt: now.UTC().Format(time.RFC3339)}
 	if workload.Ref.Kind == model.KindCronJob {
-		state.OriginalSuspended = lo.ToPtr(workload.Suspended)
+		state.OriginalSuspended = new(workload.Suspended)
 	} else {
-		state.OriginalReplicas = lo.ToPtr(workload.Replicas)
+		state.OriginalReplicas = new(workload.Replicas)
 	}
 	return state
 }
 
 func NewGitOpsState(resource *model.GitOpsResource, operationID string, now time.Time) *GitOpsState {
 	state := &GitOpsState{
-		OperationID: operationID, OriginalSuspended: lo.ToPtr(resource.Suspended),
+		OperationID: operationID, OriginalSuspended: new(resource.Suspended),
 		SavedAt: now.UTC().Format(time.RFC3339),
 	}
 	if resource.Ref.Provider == model.ProviderArgoCD {
 		if value, ok := resource.Annotations["argocd.argoproj.io/skip-reconcile"]; ok {
-			state.OriginalSkipReconcile = lo.ToPtr(value)
+			state.OriginalSkipReconcile = new(value)
 		}
 	}
 	return state
